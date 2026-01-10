@@ -154,6 +154,8 @@ services:
       start_period: 10s
     networks:
       iceberg_net:
+    ports:
+      - "25432:5432"
 
   minio:
     image: minio/minio:RELEASE.2025-07-23T15-54-02Z
@@ -201,6 +203,14 @@ services:
         condition: service_healthy
 
   openfga:
+    deploy:
+      resources:
+        limits:
+          memory: 512M      # Hard limit: Container will be killed if it exceeds this
+          cpus: 1
+        reservations:
+          memory: 32M
+          cpus: 1
     depends_on:
       openfga-db:
         condition: service_healthy
@@ -222,6 +232,11 @@ services:
       - OPENFGA_CACHE_CONTROLLER_ENABLED=true
       - OPENFGA_CHECK_QUERY_CACHE_ENABLED=true
       - OPENFGA_CHECK_ITERATOR_CACHE_ENABLED=true
+      - OPENFGA_REQUEST_TIMEOUT=20s
+      # avoid OOM kills under load
+      - OPENFGA_CHECK_CACHE_LIMIT=1000
+      - OPENFGA_CHECK_ITERATOR_CACHE_MAX_RESULTS=1000
+      - OPENFGA_CHECK_QUERY_CACHE_LIMIT=1000
     networks:
       iceberg_net:
     healthcheck:
