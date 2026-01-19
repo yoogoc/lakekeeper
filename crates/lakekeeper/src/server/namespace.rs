@@ -31,7 +31,7 @@ use crate::{
         Transaction,
         authz::{
             Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogWarehouseAction,
-            NamespaceParent,
+            ListAllowedEntitiesResponse, NamespaceParent,
         },
         events::{
             APIEventContext, EventDispatcher, NamespaceOrWarehouseAPIContext,
@@ -85,7 +85,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let event_ctx = create_namespace_or_warehouse_event_context(
             parent.clone(),
-            request_metadata,
+            request_metadata.clone(),
             state.v1_state.events,
             warehouse_id,
             CatalogNamespaceAction::ListNamespaces,
@@ -105,12 +105,22 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             event_ctx.emit_authz(authz_result)?;
 
         // ------------------- BUSINESS LOGIC -------------------
+        // Get allowed namespace IDs if not ListEverything
+        let allowed_response = if can_list_everything {
+            ListAllowedEntitiesResponse::All
+        } else {
+            authorizer
+                .list_allowed_namespaces(&request_metadata, warehouse_id)
+                .await?
+        };
+
         let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
         let (idents, ids, next_page_token) = server::fetch_until_full_page::<_, _, _, C>(
             query.page_size,
             query.page_token.clone(),
             |ps, page_token, trx| {
                 let parent = parent.clone();
+                let allowed_response = allowed_response.clone();
                 let authorizer = authorizer.clone();
                 let warehouse = warehouse.clone();
                 let request_metadata = event_ctx.request_metadata().clone();
@@ -135,25 +145,29 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         .into_iter_with_page_tokens()
                         .multiunzip();
 
-                    let masks = if can_list_everything {
-                        // No need to check individual permissions if everything in namespace can
-                        // be listed.
-                        vec![true; ids.len()]
-                    } else {
-                        authorizer
-                            .are_allowed_namespace_actions_vec(
-                                request_metadata,
-                                None,
-                                &warehouse,
-                                &parent_namespaces,
-                                &responses
-                                    .iter()
-                                    .map(|id| (id, CatalogNamespaceAction::IncludeInList))
-                                    .collect::<Vec<_>>(),
-                            )
-                            .await
-                            .map_err(authz_to_error_no_audit)?
-                            .into_allowed()
+                    // Filter based on allowed IDs, with fallback to legacy behavior
+                    let masks: Vec<bool> = match &allowed_response {
+                        ListAllowedEntitiesResponse::All => vec![true; ids.len()],
+                        ListAllowedEntitiesResponse::Ids(allowed_ids) => {
+                            ids.iter().map(|id| allowed_ids.contains(id)).collect()
+                        }
+                        ListAllowedEntitiesResponse::NotImplemented => {
+                            // Fallback to legacy per-item authorization check
+                            authorizer
+                                .are_allowed_namespace_actions_vec(
+                                    request_metadata,
+                                    None,
+                                    &warehouse,
+                                    &parent_namespaces,
+                                    &responses
+                                        .iter()
+                                        .map(|id| (id, CatalogNamespaceAction::IncludeInList))
+                                        .collect::<Vec<_>>(),
+                                )
+                                .await
+                                .map_err(authz_to_error_no_audit)?
+                                .into_allowed()
+                        }
                     };
 
                     let (next_namespaces, next_ids, next_page_tokens, mask): (

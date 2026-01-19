@@ -164,6 +164,8 @@ pub enum OpenFGAError {
     InvalidQuery(String),
     #[error("Cannot grant permissions while role is assumed in OpenFGA Authorizer")]
     GrantRoleWithAssumedRole,
+    #[error("Invalid OpenFGA entity: {0}")]
+    InvalidEntity(String),
 }
 
 impl From<OpenFGAClientError> for OpenFGAError {
@@ -226,7 +228,8 @@ impl AuthorizationFailureSource for OpenFGAError {
             }
             e @ (OpenFGAError::ActiveAuthModelNotFound(_)
             | OpenFGAError::StoreNotFound(_)
-            | OpenFGAError::InvalidQuery(_)) => {
+            | OpenFGAError::InvalidQuery(_)
+            | OpenFGAError::InvalidEntity(_)) => {
                 ErrorModel::internal(err_msg, "OpenFGAError", Some(Box::new(e)))
             }
         }
@@ -251,7 +254,8 @@ impl AuthorizationFailureSource for OpenFGAError {
             | OpenFGAError::SelfAssignment { .. }
             | OpenFGAError::InvalidQuery(_)
             | OpenFGAError::GrantRoleWithAssumedRole
-            | OpenFGAError::CannotWriteTupleAlreadyExists(_) => {
+            | OpenFGAError::CannotWriteTupleAlreadyExists(_)
+            | OpenFGAError::InvalidEntity(_) => {
                 AuthorizationFailureReason::InvalidRequestData
             }
         }

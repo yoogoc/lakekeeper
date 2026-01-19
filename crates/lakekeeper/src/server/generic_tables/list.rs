@@ -14,7 +14,7 @@ use crate::{
         CachePolicy, CatalogGenericTableOps, CatalogStore, Result, SecretStore, State, Transaction,
         authz::{
             ActionOnGenericTable, AuthZGenericTableOps, Authorizer, AuthzNamespaceOps,
-            CatalogGenericTableAction, CatalogNamespaceAction,
+            CatalogGenericTableAction, CatalogNamespaceAction, ListAllowedEntitiesResponse,
         },
         events::{
             APIEventContext, AuthorizationFailureSource,
@@ -87,39 +87,55 @@ pub(super) async fn list_generic_tables<C: CatalogStore, A: Authorizer + Clone, 
         .map_err(AuthorizationFailureSource::into_error_model)?
         .into_inner();
 
-    let masks = if can_list_everything {
-        vec![true; entries.len()]
+    // Get allowed generic table IDs if not ListEverything
+    let allowed_response = if can_list_everything {
+        ListAllowedEntitiesResponse::All
     } else {
-        let actions: Vec<_> = entries
-            .iter()
-            .map(|entry| {
-                (
-                    &ns.namespace,
-                    ActionOnGenericTable {
-                        info: entry,
-                        action: CatalogGenericTableAction::IncludeInList,
-                        user: None,
-                        is_delegated_execution: false,
-                    },
-                )
-            })
-            .collect();
-
-        let parents: HashMap<_, _> = ns
-            .parents
-            .iter()
-            .map(|n| (n.namespace_id(), n.clone()))
-            .collect();
         authorizer
-            .are_allowed_generic_table_actions_vec(
-                &request_metadata,
-                &warehouse,
-                &parents,
-                &actions,
-            )
-            .await
-            .map_err(AuthorizationFailureSource::into_error_model)?
-            .into_allowed()
+            .list_allowed_generic_tables(&request_metadata, warehouse_id)
+            .await?
+    };
+
+    // Filter based on allowed IDs, with fallback to legacy behavior
+    let masks: Vec<bool> = match &allowed_response {
+        ListAllowedEntitiesResponse::All => vec![true; entries.len()],
+        ListAllowedEntitiesResponse::Ids(allowed_ids) => entries
+            .iter()
+            .map(|entry| allowed_ids.contains(&entry.generic_table_id))
+            .collect(),
+        ListAllowedEntitiesResponse::NotImplemented => {
+            // Fallback to legacy per-item authorization check
+            let actions: Vec<_> = entries
+                .iter()
+                .map(|entry| {
+                    (
+                        &ns.namespace,
+                        ActionOnGenericTable {
+                            info: entry,
+                            action: CatalogGenericTableAction::IncludeInList,
+                            user: None,
+                            is_delegated_execution: false,
+                        },
+                    )
+                })
+                .collect();
+
+            let parents: HashMap<_, _> = ns
+                .parents
+                .iter()
+                .map(|n| (n.namespace_id(), n.clone()))
+                .collect();
+            authorizer
+                .are_allowed_generic_table_actions_vec(
+                    &request_metadata,
+                    &warehouse,
+                    &parents,
+                    &actions,
+                )
+                .await
+                .map_err(AuthorizationFailureSource::into_error_model)?
+                .into_allowed()
+        }
     };
 
     let identifiers = entries

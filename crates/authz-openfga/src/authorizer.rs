@@ -6,7 +6,7 @@ use std::{
 use futures::future::try_join_all;
 use lakekeeper::{
     ProjectId, WarehouseId,
-    api::{ApiContext, IcebergErrorResponse, RequestMetadata, iceberg::v1::PaginationQuery},
+    api::{ApiContext, IcebergErrorResponse, RequestMetadata, iceberg::v1::{PaginationQuery, Result}},
     async_trait,
     axum::Router,
     service::{
@@ -18,10 +18,10 @@ use lakekeeper::{
             ActionOnGenericTable, ActionOnTable, ActionOnView, AddRoleAssignmentsError,
             AuthorizationBackendUnavailable, AuthorizationDecision, Authorizer,
             AuthzBackendErrorOrBadRequest, CannotInspectPermissions, CatalogProjectAction,
-            CatalogUserAction, IsAllowedActionError, ListProjectsResponse,
-            ListRoleAssignmentsError, ListRoleAssignmentsResultPage, MalformedRoleAssignment,
-            ManagesRoleAssignments, NamespaceParent, RoleAssignmentFilter, RoleAssignmentRow,
-            UserOrRole, UserOrRoleId,
+            CatalogUserAction, IsAllowedActionError, ListAllowedEntitiesResponse,
+            ListProjectsResponse, ListRoleAssignmentsError, ListRoleAssignmentsResultPage,
+            MalformedRoleAssignment, ManagesRoleAssignments, NamespaceParent, RoleAssignmentFilter,
+            RoleAssignmentRow, UserOrRole, UserOrRoleId,
         },
         events::context::authz_to_error_no_audit,
         health::Health,
@@ -41,7 +41,7 @@ use utoipa::OpenApi as _;
 
 use crate::{
     AUTH_CONFIG, FgaType, MAX_TUPLES_PER_WRITE,
-    entities::{OpenFgaEntity, ParseOpenFgaEntity},
+    entities::{OpenFgaEntity, ParseOpenFgaEntity, parse_generic_table_from_openfga, parse_table_from_openfga, parse_view_from_openfga},
     error::{
         BatchCheckError, MissingItemInBatchCheck, OpenFGABackendUnavailable, OpenFGAError,
         OpenFGAResult, UnexpectedCorrelationId,
@@ -916,6 +916,122 @@ impl Authorizer for OpenFGAAuthorizer {
         view_id: ViewId,
     ) -> AuthorizerResult<()> {
         self.delete_all_relations(&(warehouse_id, view_id)).await
+    }
+
+    async fn list_allowed_tables(
+        &self,
+        metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<TableId>> {
+        let actor = metadata.actor();
+
+        // Call list_objects to get all tables the user can see
+        let tables = self
+            .list_objects(
+                FgaType::Table.to_string(),
+                TableRelation::CanIncludeInList.to_string(),
+                actor.to_openfga(),
+            )
+            .await
+            .map_err(authz_to_error_no_audit)?
+            .into_iter()
+            .filter_map(|obj| {
+                parse_table_from_openfga(&obj, warehouse_id)
+                    .inspect_err(|e| {
+                        tracing::error!("{e}. Failed to parse table id from OpenFGA.");
+                    })
+                    .ok()
+            })
+            .collect::<HashSet<TableId>>();
+
+        Ok(ListAllowedEntitiesResponse::Ids(tables))
+    }
+
+    async fn list_allowed_views(
+        &self,
+        metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<ViewId>> {
+        let actor = metadata.actor();
+
+        // Call list_objects to get all views the user can see
+        let views = self
+            .list_objects(
+                FgaType::View.to_string(),
+                ViewRelation::CanIncludeInList.to_string(),
+                actor.to_openfga(),
+            )
+            .await
+            .map_err(authz_to_error_no_audit)?
+            .into_iter()
+            .filter_map(|obj| {
+                parse_view_from_openfga(&obj, warehouse_id)
+                    .inspect_err(|e| {
+                        tracing::error!("{e}. Failed to parse view id from OpenFGA.");
+                    })
+                    .ok()
+            })
+            .collect::<HashSet<ViewId>>();
+
+        Ok(ListAllowedEntitiesResponse::Ids(views))
+    }
+
+    async fn list_allowed_generic_tables(
+        &self,
+        metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<GenericTableId>> {
+        let actor = metadata.actor();
+
+        // Call list_objects to get all generic tables the user can see
+        let generic_tables = self
+            .list_objects(
+                FgaType::GenericTable.to_string(),
+                GenericTableRelation::CanIncludeInList.to_string(),
+                actor.to_openfga(),
+            )
+            .await
+            .map_err(authz_to_error_no_audit)?
+            .into_iter()
+            .filter_map(|obj| {
+                parse_generic_table_from_openfga(&obj, warehouse_id)
+                    .inspect_err(|e| {
+                        tracing::error!("{e}. Failed to parse generic table id from OpenFGA.");
+                    })
+                    .ok()
+            })
+            .collect::<HashSet<GenericTableId>>();
+
+        Ok(ListAllowedEntitiesResponse::Ids(generic_tables))
+    }
+
+    async fn list_allowed_namespaces(
+        &self,
+        metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<NamespaceId>> {
+        let actor = metadata.actor();
+
+        // Call list_objects to get all namespaces the user can see
+        let namespaces = self
+            .list_objects(
+                FgaType::Namespace.to_string(),
+                NamespaceRelation::CanIncludeInList.to_string(),
+                actor.to_openfga(),
+            )
+            .await
+            .map_err(authz_to_error_no_audit)?
+            .into_iter()
+            .filter_map(|obj| {
+                NamespaceId::parse_from_openfga(&obj)
+                    .inspect_err(|e| {
+                        tracing::error!("{e}. Failed to parse namespace id from OpenFGA.");
+                    })
+                    .ok()
+            })
+            .collect::<HashSet<NamespaceId>>();
+
+        Ok(ListAllowedEntitiesResponse::Ids(namespaces))
     }
 
     fn role_assignments(&self) -> Option<&dyn ManagesRoleAssignments> {

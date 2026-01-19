@@ -21,7 +21,7 @@ use crate::{
             AuthzBackendErrorOrBadRequest, CatalogGenericTableAction, CatalogNamespaceAction,
             CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
             CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, IsAllowedActionError,
-            ListProjectsResponse, NamespaceParent, UserOrRole,
+            ListAllowedEntitiesResponse, ListProjectsResponse, NamespaceParent, UserOrRole,
         },
         health::{Health, HealthExt},
     },
@@ -336,5 +336,37 @@ impl Authorizer for AllowAllAuthorizer {
         _generic_table_id: GenericTableId,
     ) -> Result<()> {
         Ok(())
+    }
+
+    async fn list_allowed_tables(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<TableId>> {
+        Ok(ListAllowedEntitiesResponse::All)
+    }
+
+    async fn list_allowed_views(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<ViewId>> {
+        Ok(ListAllowedEntitiesResponse::All)
+    }
+
+    async fn list_allowed_generic_tables(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<GenericTableId>> {
+        Ok(ListAllowedEntitiesResponse::All)
+    }
+
+    async fn list_allowed_namespaces(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<NamespaceId>> {
+        Ok(ListAllowedEntitiesResponse::All)
     }
 }

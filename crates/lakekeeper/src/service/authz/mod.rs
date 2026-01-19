@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{Arc, LazyLock},
 };
 
@@ -52,6 +52,30 @@ mod user;
 pub use user::*;
 
 use crate::{api::ApiContext, service::authn::UserId};
+
+/// Response from list_allowed_tables/list_allowed_views methods
+#[derive(Debug, Clone)]
+pub enum ListAllowedEntitiesResponse<T> {
+    /// The method is not implemented by the authorizer (fallback to legacy behavior)
+    NotImplemented,
+    /// All entities are allowed (user has ListEverything or similar permission)
+    All,
+    /// Only specific entities are allowed
+    Ids(HashSet<T>),
+}
+
+impl<T: Eq + std::hash::Hash> PartialEq for ListAllowedEntitiesResponse<T> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::NotImplemented, Self::NotImplemented) => true,
+            (Self::All, Self::All) => true,
+            (Self::Ids(a), Self::Ids(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl<T: Eq + std::hash::Hash> Eq for ListAllowedEntitiesResponse<T> {}
 
 /// Custom deserializer that converts various JSON values to strings
 fn deserialize_string_map<'de, D>(
@@ -1865,6 +1889,50 @@ where
         _generic_table_id: GenericTableId,
     ) -> Result<()> {
         Ok(())
+    }
+
+    /// List tables the user is allowed to see in a warehouse.
+    /// Returns NotImplemented (fallback to legacy), All (user can see everything), or specific table IDs.
+    async fn list_allowed_tables(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<TableId>> {
+        // Default implementation: return NotImplemented to trigger fallback
+        Ok(ListAllowedEntitiesResponse::NotImplemented)
+    }
+
+    /// List views the user is allowed to see in a warehouse.
+    /// Returns NotImplemented (fallback to legacy), All (user can see everything), or specific view IDs.
+    async fn list_allowed_views(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<ViewId>> {
+        // Default implementation: return NotImplemented to trigger fallback
+        Ok(ListAllowedEntitiesResponse::NotImplemented)
+    }
+
+    /// List generic tables the user is allowed to see in a warehouse.
+    /// Returns NotImplemented (fallback to legacy), All (user can see everything), or specific generic table IDs.
+    async fn list_allowed_generic_tables(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<GenericTableId>> {
+        // Default implementation: return NotImplemented to trigger fallback
+        Ok(ListAllowedEntitiesResponse::NotImplemented)
+    }
+
+    /// List namespaces the user is allowed to see in a warehouse.
+    /// Returns NotImplemented (fallback to legacy), All (user can see everything), or specific namespace IDs.
+    async fn list_allowed_namespaces(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+    ) -> Result<ListAllowedEntitiesResponse<NamespaceId>> {
+        // Default implementation: return NotImplemented to trigger fallback
+        Ok(ListAllowedEntitiesResponse::NotImplemented)
     }
 }
 
