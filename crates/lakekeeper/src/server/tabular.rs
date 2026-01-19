@@ -48,14 +48,12 @@ macro_rules! list_entities {
     ($entity:ident, $list_fn:ident, $resolved_warehouse:ident, $namespace_response:ident, $authorizer:ident, $request_metadata:ident) => {
         |ps, page_token, trx: &mut _| {
             use ::pastey::paste;
-            use iceberg_ext::catalog::rest::ErrorModel;
 
             use crate::{
                 server::UnfilteredPage,
-                service::{BasicTabularInfo, TabularListFlags, require_namespace_for_tabular},
+                service::TabularListFlags,
             };
 
-            // let namespace = $namespace.clone();
             let authorizer = $authorizer.clone();
             let request_metadata = $request_metadata.clone();
             let warehouse_id = $namespace_response.warehouse_id();
@@ -68,14 +66,8 @@ macro_rules! list_entities {
                     page_size: Some(ps),
                     page_token: page_token.into(),
                 };
-                let entities = C::$list_fn(
-                    warehouse_id,
-                    Some(namespace_id),
-                    TabularListFlags::active(),
-                    trx.transaction(),
-                    query,
-                )
-                .await?;
+
+                // Check ListEverything permission first (fast path)
                 let can_list_everything = authorizer
                     .is_allowed_namespace_action(
                         &request_metadata,
@@ -88,39 +80,43 @@ macro_rules! list_entities {
                     .await?
                     .into_inner();
 
+                tracing::debug!("list_allowed_xxs start");
+                tracing::debug!(name: "query", query= ?query);
+                // Get allowed entity IDs if not ListEverything
+                let allowed_response = if can_list_everything {
+                    None // All entities allowed via ListEverything
+                } else {
+                    paste! {
+                        Some(authorizer.[<list_allowed_ $entity:lower s>](
+                            &request_metadata,
+                            warehouse_id,
+                        ).await?)
+                    }
+                };
+
+                tracing::debug!("list_allowed_xxs finish, list start");
+
+                // Fetch entities from database
+                let entities = C::$list_fn(
+                    warehouse_id,
+                    Some(namespace_id),
+                    TabularListFlags::active(),
+                    trx.transaction(),
+                    query,
+                )
+                .await?;
+
+                tracing::debug!("list finish");
+
                 let (ids, idents, tokens): (Vec<_>, Vec<_>, Vec<_>) =
                     entities.into_iter_with_page_tokens().multiunzip();
 
-                let masks = if can_list_everything {
-                    // No need to check individual permissions if everything in namespace can
-                    // be listed.
-                    vec![true; ids.len()]
-                } else {
-                    let requested_namespace_ids = idents
-                        .iter()
-                        .map(|id| BasicTabularInfo::namespace_id(&id.tabular))
-                        .collect::<Vec<_>>();
-                    let namespaces = C::get_namespaces_by_id(
-                        warehouse_id,
-                        &requested_namespace_ids,
-                        trx.transaction(),
-                    )
-                    .await?;
-
-                    paste! {
-                        authorizer.[<are_allowed_ $entity:lower _actions_vec>](
-                            &request_metadata,
-                            None,
-                            &resolved_warehouse,
-                            &namespaces,
-                            &idents.iter().map(|t| Ok::<_, ErrorModel>((
-                                require_namespace_for_tabular(&namespaces, &t.tabular)?,
-                                t,
-                                [<Catalog $entity Action>]::IncludeInList)
-                            )
-                            ).collect::<Result<Vec<_>, _>>()?,
-                        ).await?.into_inner()
-                    }
+                // Filter based on allowed IDs
+                let masks: Vec<bool> = match &allowed_response {
+                    None => vec![true; ids.len()], // All allowed via ListEverything
+                    Some(response) => ids.iter()
+                        .map(|id| response.is_allowed(id))
+                        .collect(),
                 };
 
                 let (next_idents, next_uuids, next_page_tokens, mask): (
@@ -152,3 +148,4 @@ use http::StatusCode;
 use iceberg_ext::{catalog::rest::ErrorModel, configs::namespace::NamespaceProperties};
 use lakekeeper_io::Location;
 pub(crate) use list_entities;
+

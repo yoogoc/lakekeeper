@@ -125,15 +125,24 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         }
 
         // ------------------- BUSINESS LOGIC -------------------
+        // Get allowed namespace IDs if not ListEverything
+        let allowed_response = if can_list_everything {
+            None // All namespaces allowed via ListEverything
+        } else {
+            Some(
+                authorizer
+                    .list_allowed_namespaces(&request_metadata, warehouse_id)
+                    .await?,
+            )
+        };
+
         let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
         let (idents, ids, next_page_token) = server::fetch_until_full_page::<_, _, _, C>(
             query.page_size,
             query.page_token.clone(),
             |ps, page_token, trx| {
                 let parent = parent.clone();
-                let authorizer = authorizer.clone();
-                let request_metadata = request_metadata.clone();
-                let warehouse = warehouse.clone();
+                let allowed_response = allowed_response.clone();
                 async move {
                     let query = ListNamespacesQuery {
                         page_size: Some(ps),
@@ -148,30 +157,15 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     // return the correct next page token which is why we do these unholy things here.
                     let list_namespaces =
                         C::list_namespaces(warehouse_id, &query, trx.transaction()).await?;
-                    let parent_namespaces = list_namespaces.parent_namespaces;
                     let (ids, responses, tokens): (Vec<_>, Vec<_>, Vec<_>) = list_namespaces
                         .namespaces
                         .into_iter_with_page_tokens()
                         .multiunzip();
 
-                    let masks = if can_list_everything {
-                        // No need to check individual permissions if everything in namespace can
-                        // be listed.
-                        vec![true; ids.len()]
-                    } else {
-                        authorizer
-                            .are_allowed_namespace_actions_vec(
-                                &request_metadata,
-                                None,
-                                &warehouse,
-                                &parent_namespaces,
-                                &responses
-                                    .iter()
-                                    .map(|id| (id, CatalogNamespaceAction::IncludeInList))
-                                    .collect::<Vec<_>>(),
-                            )
-                            .await?
-                            .into_inner()
+                    // Filter based on allowed IDs
+                    let masks: Vec<bool> = match &allowed_response {
+                        None => vec![true; ids.len()], // All allowed via ListEverything
+                        Some(response) => ids.iter().map(|id| response.is_allowed(id)).collect(),
                     };
 
                     let (next_namespaces, next_ids, next_page_tokens, mask): (

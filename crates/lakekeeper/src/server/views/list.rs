@@ -12,10 +12,7 @@ use crate::{
     service::{
         CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps, SecretStore,
         State, Transaction,
-        authz::{
-            AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
-            CatalogViewAction,
-        },
+        authz::{Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction},
     },
 };
 
